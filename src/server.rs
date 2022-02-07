@@ -1,28 +1,52 @@
 use std::error::Error;
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::io::{BufReader, AsyncBufReadExt};
+use tokio::sync::Semaphore;
 
 
 async fn start_server<T: ToSocketAddrs>(addr: T) -> Result<(), Box<dyn Error>> {
     //TODO Task Sceduler in this fun, so that this can run in thread
-    
-    //bind listener
+
     let listener = TcpListener::bind(addr).await?;
+    let sem = Arc::new(Semaphore::new(10));
 
     loop {
-        let (socket, adress) = listener.accept().await?;
-        
+        let (socket, _adress) = listener.accept().await?;
+        let sem_clone = Arc::clone(&sem);
+
         tokio::spawn(async move {
-            //process(socket).await;
+            let aq = sem_clone.try_acquire();
+            
+            if let Ok(_guard) = aq {
+                process(socket).await;
+            }
+            else {
+                panic!("too many connections!");
+            }
         });
     }
 }
 
-
 async fn process(mut socket: TcpStream) {
-    let mut socket = BufReader::new(socket);
+    println!("recvd conn");
+}
 
-    let buf: &mut String = &mut String::new();
 
-    socket.read_line(buf).await;
+#[allow(unused)]
+#[cfg(test)]
+mod tests {
+
+    use std::error::Error;
+    use std::os::unix::thread;
+    use std::time::Duration;
+    use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+    use tokio::io::{BufReader, AsyncBufReadExt};
+    use tokio::runtime;
+
+    use super::start_server;
+
+
+    #[tokio::test]
+    async fn test() {
+    }
 }
