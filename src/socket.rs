@@ -36,8 +36,6 @@ impl Send for Vec<u8> {
         self
     }
 }
-
-
 #[derive(Clone, Debug)]
 struct Header {
     //ca. 4.3 GB ist maximum
@@ -59,7 +57,6 @@ impl Send for Header {
         unsafe { any_as_u8_slice::<Self>(&self) }
     }
 }
-
 struct Message {
     header: Header,
     data: Vec<u8>,
@@ -73,7 +70,6 @@ impl Message {
         }
     }
 }
-
 struct Socket {
     stream: TcpStream,
     recv_buffer: Vec<u8>,
