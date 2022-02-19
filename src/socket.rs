@@ -22,16 +22,16 @@ unsafe fn any_struct_from_u8_slice<T: Sized + Clone>(bytes: &[u8]) -> T {
 }
 //
 
-pub trait Send {
+pub trait Sendable {
     fn to_sendable(&self) -> &[u8];
 }
 
-impl Send for &[u8] {
+impl Sendable for &[u8] {
     fn to_sendable(&self) -> &[u8] {
         self
     }
 }
-impl Send for Vec<u8> {
+impl Sendable for Vec<u8> {
     fn to_sendable(&self) -> &[u8] {
         self
     }
@@ -52,7 +52,7 @@ impl Header {
     }
 }
 
-impl Send for Header {
+impl Sendable for Header {
     fn to_sendable(&self) -> &[u8] {
         unsafe { any_as_u8_slice::<Self>(&self) }
     }
@@ -70,7 +70,7 @@ impl Message {
         }
     }
 }
-struct Socket {
+pub struct Socket {
     stream: TcpStream,
     recv_buffer: Vec<u8>,
 }
@@ -88,9 +88,11 @@ impl Socket {
             //wait until writable
             self.stream.writable().await?;
             match self.stream.try_write(data) {
-                //panic if the read length isnt the header length, that makes version comability problamatic
+                //panic if the read length isnt the header length, hier muss error handling rein
                 Ok(ref n) if n != &data.len() => panic!("couldnt send all"),
+                //continue if blocking
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                //anderer error wird hochpropagiert
                 Err(e) => return Err(e.into()),
                 _ => break,
             }
@@ -108,12 +110,14 @@ impl Socket {
             self.stream.readable().await?;
 
             match self.stream.try_read(&mut buf) {
+                //wenn nicht weiter gelesen werden kann: break
                 Ok(ref n) if *n == 0 as usize => break,
                 Ok(n) => _bytes_read = n,
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(e) => return Err(e.into()),
             }
 
+            //appende gelesenes an den buffer
             self.recv_buffer.extend(&buf[0.._bytes_read]);
         }
 
@@ -121,8 +125,10 @@ impl Socket {
     }
 
     fn parse_msg(&mut self) -> Message {
-        let header = unsafe {any_struct_from_u8_slice::<Header>(&self.recv_buffer.clone()[0..HEADER_SIZE])};
-        let msg = &self.recv_buffer.clone()[HEADER_SIZE..(header.get_size() + HEADER_SIZE as u32) as usize];
+        let cloned_buf = self.recv_buffer.clone();
+
+        let header = unsafe {any_struct_from_u8_slice::<Header>(&cloned_buf[0..HEADER_SIZE])};
+        let msg = &cloned_buf[HEADER_SIZE..(header.get_size() + HEADER_SIZE as u32) as usize];
 
         self.recv_buffer.drain(0..(header.data_size + HEADER_SIZE as u32) as usize);
 
@@ -138,7 +144,10 @@ impl Socket {
         messages
     }
 
-    pub async fn send<T: Send>(&mut self, data: &T) -> Result<(), Box<dyn Error>> {
+
+    /// Sends an item with the Sendable trait to the in the
+    /// Socket specified Address.
+    pub async fn send<T: Sendable>(&mut self, data: &T) -> Result<(), Box<dyn Error>> {
         let data = data.to_sendable();
         
         //creating header for data
@@ -152,6 +161,9 @@ impl Socket {
         Ok(())
     }
 
+
+    /// First recieves new data, if the buffer is empty and
+    /// then tries to parse a new Message.
     pub async fn recv_one(&mut self) -> Result<Message, Box<dyn Error>> {
         if self.recv_buffer.len() == 0 {
             self.recv().await?;
@@ -160,6 +172,8 @@ impl Socket {
         Ok(self.parse_msg())        
     }
 
+    /// First recieves new data, if the buffer is empty and
+    /// then tries to parse all available data into a Vec<Message>.
     pub async fn recv_all(&mut self) -> Result<Vec<Message>, Box<dyn Error>> {
         if self.recv_buffer.len() == 0 {
             self.recv().await?;
