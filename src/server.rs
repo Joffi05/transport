@@ -37,7 +37,6 @@ async fn process(mut socket: TcpStream) {
 #[allow(unused)]
 #[cfg(test)]
 mod tests {
-
     use std::error::Error;
     use std::os::unix::thread;
     use std::time::Duration;
