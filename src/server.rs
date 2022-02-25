@@ -1,12 +1,18 @@
 use std::error::Error;
-use std::process::Output;
-use std::ptr::NonNull;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::runtime::Handle;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 use crate::socket::{Socket, Sendable};
 
+struct Message {
+
+}
+
+struct Server {
+    sender: Arc<mpsc::Sender<Message>>,
+    
+}
 
 async fn start_server<T: ToSocketAddrs>(addr: T) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(addr).await?;
@@ -20,7 +26,7 @@ async fn start_server<T: ToSocketAddrs>(addr: T) -> Result<(), Box<dyn Error>> {
             let aq = sem_clone.try_acquire();
             
             if let Ok(_guard) = aq {
-                process(socket).await;
+                process(Socket::new(socket)).await;
             }
             else {
                 panic!("too many connections!");
@@ -29,7 +35,7 @@ async fn start_server<T: ToSocketAddrs>(addr: T) -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn process(mut socket: TcpStream) {
+async fn process(mut socket: Socket) {
     println!("recvd conn");
 }
 

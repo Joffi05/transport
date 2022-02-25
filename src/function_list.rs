@@ -1,12 +1,15 @@
-use std::{error::Error, ops::Index, rc::Rc};
+use std::{error::Error, rc::Rc};
 use crate::socket::Sendable;
 
-pub struct Funnel {
-    funcs: Vec<Rc<dyn Fn(Vec<u8>) -> Vec<u8>>>,
+
+pub struct Funnel<T>
+where T: Sendable + 'static {
+    funcs: Vec<Rc<dyn Fn(T) -> T>>,
     current: u32,
 }
 
-impl Funnel {
+impl<T> Funnel<T> 
+where T: Sendable {
     pub fn new() -> Self {
         Self {
             funcs: vec![],
@@ -14,20 +17,20 @@ impl Funnel {
         }
     }
 
-    pub fn next(&mut self) -> Result<Rc<dyn Fn(Vec<u8>) -> Vec<u8>>, Box<dyn Error>> {
+    pub fn next(&mut self) -> Result<Rc<dyn Fn(T) -> T>, Box<dyn Error>> {
         self.current += 1;
         Ok(self.funcs[self.current as usize].clone())
     }
 
-    pub fn current(&mut self) -> Result<Rc<dyn Fn(Vec<u8>) -> Vec<u8>>, Box<dyn Error>> {
+    pub fn current(&mut self) -> Result<Rc<dyn Fn(T) -> T>, Box<dyn Error>> {
         Ok(self.funcs[self.current as usize].clone())
     }
 
-    pub fn add_fn(&mut self, fun: Box<dyn Fn(Vec<u8>) -> Vec<u8>>) {
+    pub fn add_fn(&mut self, fun: Box<dyn Fn(T) -> T>) {
         self.funcs.push(Rc::new(fun))
     }
 
-    pub fn funnel_through(&mut self, start_val: Vec<u8>) -> Vec<u8> {
+    pub fn funnel_through(&mut self, start_val: T) -> T {
         let mut last = self.funcs[0](start_val);
 
         Box::new(for (i, e) in self.funcs.iter().enumerate() {
