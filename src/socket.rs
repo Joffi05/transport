@@ -2,6 +2,7 @@
 
 use std::{error::Error};
 use std::mem::size_of;
+use bytes::Buf;
 use tokio::net::{TcpStream};
 
 const HEADER_SIZE: usize = size_of::<Header>();
@@ -21,6 +22,19 @@ unsafe fn any_struct_from_u8_slice<T: Sized + Clone>(bytes: &[u8]) -> T {
     body[0].clone()
 }
 //
+
+
+#[derive(Debug, Clone)]
+struct ParseMessageError;
+
+impl std::fmt::Display for ParseMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "couldn't parse Message")
+    }
+}
+
+impl Error for ParseMessageError {}
+
 
 pub trait Sendable {
     fn to_sendable(&self) -> &[u8];
@@ -113,7 +127,7 @@ impl Socket {
                 //wenn nicht weiter gelesen werden kann: break
                 Ok(ref n) if *n == 0 as usize => break,
                 Ok(n) => _bytes_read = n,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break, // hier gechanged von continue
                 Err(e) => return Err(e.into()),
             }
 
@@ -124,7 +138,11 @@ impl Socket {
         Ok(())
     }
 
-    fn parse_msg(&mut self) -> Message {
+    fn parse_msg(&mut self) -> Result<Message, ParseMessageError> {
+        if self.recv_buffer.len() <= 4 {
+            return Err(ParseMessageError)
+        }
+        
         let cloned_buf = self.recv_buffer.clone();
 
         let header = unsafe {any_struct_from_u8_slice::<Header>(&cloned_buf[0..HEADER_SIZE])};
@@ -132,14 +150,19 @@ impl Socket {
 
         self.recv_buffer.drain(0..(header.data_size + HEADER_SIZE as u32) as usize);
 
-        Message::new(header, msg.to_vec())
+        Ok(Message::new(header, msg.to_vec()))
     }
 
     fn parse_all(&mut self) -> Vec<Message> {
         let mut messages: Vec<Message> = vec![];
 
         while self.recv_buffer.len() >= HEADER_SIZE {
-            messages.push(self.parse_msg());
+            let parsed= self.parse_msg();
+            
+            match parsed {
+                Ok(x) => messages.push(x),
+                Err(_e) => return messages,
+            }
         }
         messages
     }
@@ -169,7 +192,10 @@ impl Socket {
             self.recv().await?;
         }
 
-        Ok(self.parse_msg())        
+        match self.parse_msg() {
+            Ok(x) => return Ok(x),
+            Err(e) => return Err(Box::new(e))
+        }
     }
 
     /// First recieves new data, if the buffer is empty and
@@ -253,5 +279,23 @@ mod tests {
         });
 
         tokio::join!(handle_recv, handle_send);
+    }
+
+
+    #[tokio::test]
+    async fn test_network_sending() {
+        let mut socket_sender = TcpStream::connect("192.168.178.43:700").await.unwrap();
+        let mut sender = Socket::new(socket_sender);
+
+        let mut send_vec: Vec<u8> = vec![0; 100];
+
+        println!("sending...");
+        sender.send(&send_vec).await;
+
+        let recv_msg = sender.recv_one().await.unwrap();
+
+        assert_eq!(recv_msg.data, send_vec);
+
+        println!("Finished!");
     }
 }
