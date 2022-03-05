@@ -68,7 +68,11 @@ impl Header {
 
 impl Sendable for Header {
     fn to_sendable(&self) -> Vec<u8> {
-        any_as_u8_slice::<Self>(&self).unwrap()
+        let bin_vec = any_as_u8_slice::<Self>(&self).unwrap();
+
+        println!("Bin vec size: {:?}", bin_vec.len());
+
+        bin_vec
     }
 }
 
@@ -85,14 +89,14 @@ impl Message {
 }
 pub struct Socket {
     stream: TcpStream,
-    recv_buffer: BytesMut,
+    recv_buffer: Vec<u8>,
 }
 
 impl Socket {
     pub fn new(stream: TcpStream) -> Self {
         Socket {
             stream: stream,
-            recv_buffer: BytesMut::with_capacity(4092),
+            recv_buffer: vec![],
         }
     }
 
@@ -150,7 +154,7 @@ impl Socket {
 
         let msg = &cloned_buf[HEADER_SIZE..(header.get_size() + HEADER_SIZE as u32) as usize];
 
-        self.recv_buffer = self.recv_buffer.split_off((header.data_size + HEADER_SIZE as u32) as usize);
+        self.recv_buffer.drain(0..header.data_size as usize + HEADER_SIZE);
 
         Ok(Message::new(header, msg.to_vec()))
     }
@@ -202,6 +206,7 @@ impl Socket {
 
             let mut _bytes_read: usize = 0;
             //wait until readable
+            println!("before await readable {:?}", self.recv_buffer);
             self.stream.readable().await?;
     
             match self.stream.try_read(&mut buf) {
@@ -313,16 +318,12 @@ mod tests {
         println!("sending...");
         sender.send(&send_vec).await;
 
-        let recv_msg = sender.recv_one().await.unwrap();
-
-        assert_eq!(recv_msg.unwrap().data, send_vec);
-
         println!("Finished!");
     }
 
     #[tokio::test]
     async fn test_network_recieving() {
-        let listener_recv = TcpListener::bind("192.168.178.43:700").await.unwrap();
+        let listener_recv = TcpListener::bind("192.168.178.124:7000").await.unwrap();
 
         match listener_recv.accept().await {
             Ok(x) => {
@@ -332,7 +333,7 @@ mod tests {
                 println!("recieving...");
                 let recvd = recver.recv_one().await.unwrap().unwrap().data;
 
-                assert_eq!(recvd, vec![0, 1, 2, 3, 4, 5]);
+                assert_eq!(recvd, vec![0; 100]);
 
                 recver.send(&recvd).await;
 
