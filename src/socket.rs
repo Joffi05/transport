@@ -28,7 +28,7 @@ unsafe fn any_struct_from_u8_slice<T: Sized + Clone>(bytes: &[u8]) -> T {
 //
 
 fn any_as_u8_slice<T: Serialize>(p: &T) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
-    DefaultOptions::new().with_varint_encoding().serialize(p)
+    bincode::serialize(p)
 }
 
 
@@ -71,6 +71,7 @@ impl Sendable for Header {
         let bin_vec = any_as_u8_slice::<Self>(&self).unwrap();
 
         println!("Bin vec size: {:?}", bin_vec.len());
+
 
         bin_vec
     }
