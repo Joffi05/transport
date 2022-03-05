@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_sending() {
-        let mut socket_sender = TcpStream::connect("192.168.178.124:700").await.unwrap();
+        let mut socket_sender = TcpStream::connect("192.168.178.124:7000").await.unwrap();
         let mut sender = Socket::new(socket_sender);
 
         let mut send_vec: Vec<u8> = vec![0; 100];
@@ -339,9 +339,8 @@ mod tests {
                 println!("recieving...");
                 let recvd = recver.recv_one().await.unwrap().unwrap().data;
 
-                assert_eq!(recvd, vec![0; 1000000]);
-
-                recver.send(&recvd).await;
+                println!("recvd.len: {}", recvd.len());
+                assert_eq!(recvd.len(), 100);
 
                 println!("Finished!");
             }
