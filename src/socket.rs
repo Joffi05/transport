@@ -1,17 +1,22 @@
 #![allow(dead_code)]
 
-use std::{error::Error};
+use bytes::BytesMut;
+use std::error::Error;
 use std::mem::size_of;
-use tokio::net::{TcpStream};
+use tokio::net::TcpStream;
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use bincode::{DefaultOptions, Options};
 
 const HEADER_SIZE: usize = size_of::<Header>();
 const BUFFER_SIZE: usize = 1024;
 
+/* 
 //die sind temporär bis serde
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    ::std::slice::from_raw_parts((p as *const T) as *const u8, ::std::mem::size_of::<T>()) // hier war mal noch .to_vec() und die fn hat dann vec returned
-}
-
+    ::std::slice::from_raw_parts((p as *const T) as *const u8, ::std::mem::size_of::<T>())
+    // hier war mal noch .to_vec() und die fn hat dann vec returned
+} */
+/* 
 unsafe fn any_struct_from_u8_slice<T: Sized + Clone>(bytes: &[u8]) -> T {
     let (head, body, _tail) = bytes.align_to::<T>();
     assert!(
@@ -19,24 +24,33 @@ unsafe fn any_struct_from_u8_slice<T: Sized + Clone>(bytes: &[u8]) -> T {
         "Data was wrongly alligned in: [any_struct_from_u8_slice, event.rs]"
     );
     body[0].clone()
-}
+} */
 //
 
+fn any_as_u8_slice<T: Serialize>(p: &T) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+    DefaultOptions::new().with_varint_encoding().serialize(p)
+}
+
+
+fn any_struct_from_u8_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Box<bincode::ErrorKind>> {
+    bincode::deserialize(bytes)
+}
+
 pub trait Sendable {
-    fn to_sendable(&self) -> &[u8];
+    fn to_sendable(&self) -> Vec<u8>;
 }
 
 impl Sendable for &[u8] {
-    fn to_sendable(&self) -> &[u8] {
-        self
+    fn to_sendable(&self) -> Vec<u8> {
+        self.to_vec()
     }
 }
 impl Sendable for Vec<u8> {
-    fn to_sendable(&self) -> &[u8] {
-        self
+    fn to_sendable(&self) -> Vec<u8> {
+        self.to_vec()
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct Header {
     //ca. 4.3 GB ist maximum
     data_size: u32,
@@ -53,10 +67,12 @@ impl Header {
 }
 
 impl Sendable for Header {
-    fn to_sendable(&self) -> &[u8] {
-        unsafe { any_as_u8_slice::<Self>(&self) }
+    fn to_sendable(&self) -> Vec<u8> {
+        any_as_u8_slice::<Self>(&self).unwrap()
     }
 }
+
+#[derive(Serialize, Deserialize)]
 struct Message {
     header: Header,
     data: Vec<u8>,
@@ -64,22 +80,19 @@ struct Message {
 
 impl Message {
     pub fn new(header: Header, data: Vec<u8>) -> Message {
-        Message {
-            header,
-            data,
-        }
+        Message { header, data }
     }
 }
 pub struct Socket {
     stream: TcpStream,
-    recv_buffer: Vec<u8>,
+    recv_buffer: BytesMut,
 }
 
 impl Socket {
     pub fn new(stream: TcpStream) -> Self {
-        Socket { 
+        Socket {
             stream: stream,
-            recv_buffer: vec![],
+            recv_buffer: BytesMut::with_capacity(4092),
         }
     }
 
@@ -104,85 +117,116 @@ impl Socket {
     async fn recv(&mut self) -> Result<(), Box<dyn Error>> {
         let mut buf: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
 
-        loop {
-            let mut _bytes_read: usize = 0;
-            //wait until readable
-            self.stream.readable().await?;
+        let mut _bytes_read: usize = 0;
+        //wait until readable
+        self.stream.readable().await?;
 
-            match self.stream.try_read(&mut buf) {
-                //wenn nicht weiter gelesen werden kann: break
-                Ok(ref n) if *n == 0 as usize => break,
-                Ok(n) => _bytes_read = n,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(e.into()),
-            }
-
-            //appende gelesenes an den buffer
-            self.recv_buffer.extend(&buf[0.._bytes_read]);
+        match self.stream.try_read(&mut buf) {
+            //wenn socket closed: break
+            Ok(ref n) if *n == 0 as usize => return Ok(()),
+            Ok(n) => _bytes_read = n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
+            Err(e) => return Err(e.into()),
         }
+
+        //appende gelesenes an den buffer
+        self.recv_buffer.extend(&buf[0.._bytes_read]);
 
         Ok(())
     }
 
-    fn parse_msg(&mut self) -> Message {
+    fn parse_msg(&mut self) -> Result<Message, Box<dyn Error>> {
         let cloned_buf = self.recv_buffer.clone();
 
-        let header = unsafe {any_struct_from_u8_slice::<Header>(&cloned_buf[0..HEADER_SIZE])};
+        if self.recv_buffer.len() < (HEADER_SIZE) {
+            return Err("Couldn't parse message".into())
+        }
+
+        let header = any_struct_from_u8_slice::<Header>(&cloned_buf[0..HEADER_SIZE])?;
+        
+        if self.recv_buffer.len() < (header.data_size as usize + HEADER_SIZE) {
+            return Err("Couldn't parse message".into())
+        }
+
         let msg = &cloned_buf[HEADER_SIZE..(header.get_size() + HEADER_SIZE as u32) as usize];
 
-        self.recv_buffer.drain(0..(header.data_size + HEADER_SIZE as u32) as usize);
+        self.recv_buffer = self.recv_buffer.split_off((header.data_size + HEADER_SIZE as u32) as usize);
 
-        Message::new(header, msg.to_vec())
+        Ok(Message::new(header, msg.to_vec()))
     }
 
-    fn parse_all(&mut self) -> Vec<Message> {
+    /*fn parse_all(&mut self) -> Vec<Message> {
         let mut messages: Vec<Message> = vec![];
 
         while self.recv_buffer.len() >= HEADER_SIZE {
             messages.push(self.parse_msg());
         }
         messages
-    }
-
+    } */
 
     /// Sends an item with the Sendable trait to the in the
     /// Socket specified Address.
     pub async fn send<T: Sendable>(&mut self, data: &T) -> Result<(), Box<dyn Error>> {
         let data = data.to_sendable();
-        
+
         //creating header for data
         let header = Header::new(data.len() as u32);
         //sending header
-        self.send_u8_arr(header.to_sendable()).await?;
+        self.send_u8_arr(&header.to_sendable()).await?;
 
         //sending data
-        self.send_u8_arr(data).await?;
-        
+        self.send_u8_arr(&data).await?;
+
         Ok(())
     }
 
-
     /// First recieves new data, if the buffer is empty and
     /// then tries to parse a new Message.
-    pub async fn recv_one(&mut self) -> Result<Message, Box<dyn Error>> {
+    /* pub async fn recv_one(&mut self) -> Result<Message, Box<dyn Error>> {
         if self.recv_buffer.len() == 0 {
             self.recv().await?;
         }
 
-        Ok(self.parse_msg())        
+        Ok(self.parse_msg())
+    } */
+
+
+    //new recv_one()
+    pub async fn recv_one(&mut self) -> Result<Option<Message>, Box<dyn Error>> {
+        loop {
+            if let Ok(msg) = self.parse_msg() {
+                return Ok(Some(msg));
+            }
+
+            let mut buf: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
+
+            let mut _bytes_read: usize = 0;
+            //wait until readable
+            self.stream.readable().await?;
+    
+            match self.stream.try_read(&mut buf) {
+                //wenn socket closed: break
+                Ok(ref n) if *n == 0 as usize => return Ok(None),
+                Ok(n) => _bytes_read = n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(e.into()),
+            }
+    
+            //appende gelesenes an den buffer
+            self.recv_buffer.extend(&buf[0.._bytes_read]);
+        }
     }
 
-    /// First recieves new data, if the buffer is empty and
+    /*/// First recieves new data, if the buffer is empty and
     /// then tries to parse all available data into a Vec<Message>.
     pub async fn recv_all(&mut self) -> Result<Vec<Message>, Box<dyn Error>> {
         if self.recv_buffer.len() == 0 {
             self.recv().await?;
         }
-        
-        Ok(self.parse_all())  
-    }
-}
 
+        Ok(self.parse_all())
+    }*/
+}
 
 #[allow(unused)]
 #[cfg(test)]
@@ -201,8 +245,8 @@ mod tests {
             //
 
             recver.recv().await.unwrap();
-            assert_eq!(recver.recv_one().await.unwrap().data, vec![0; 100])
-
+            let x = recver.recv_one().await.unwrap();
+            assert_eq!(x.unwrap().data, vec![0; 100])
         });
 
         let handle_send = tokio::spawn(async move {
@@ -225,15 +269,18 @@ mod tests {
             let mut recver = Socket::new(socket_recv);
             //
 
-            assert_eq!(recver.recv_one().await.unwrap().data, vec![0,1,2,3,4,5,6,7,8]);
+            assert_eq!(
+                recver.recv_one().await.unwrap().unwrap().data,
+                vec![0, 1, 2, 3, 4, 5, 6, 7, 8]
+            );
 
-            assert_eq!(recver.recv_one().await.unwrap().data, vec![0; 10_000]);
+            assert_eq!(recver.recv_one().await.unwrap().unwrap().data, vec![0; 10_000]);
 
-            let msgs = recver.recv_all().await.unwrap();
+            /*let msgs = recver.recv_all().await.unwrap();
 
             for i in 0..10 {
                 assert_eq!(msgs[i].data, vec![0; 8])
-            }
+            } */
         });
 
         let handle_send = tokio::spawn(async move {
@@ -241,8 +288,7 @@ mod tests {
             let mut sender = Socket::new(socket_sender);
             //
 
-
-            let mut send_vec: Vec<u8> = vec![0,1,2,3,4,5,6,7,8];
+            let mut send_vec: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8];
             sender.send(&send_vec).await;
 
             let mut send_vec = vec![0; 10_000];
@@ -257,10 +303,9 @@ mod tests {
         tokio::join!(handle_recv, handle_send);
     }
 
-
     #[tokio::test]
     async fn test_network_sending() {
-        let mut socket_sender = TcpStream::connect("192.168.178.114:7000").await.unwrap();
+        let mut socket_sender = TcpStream::connect("192.168.178.43:700").await.unwrap();
         let mut sender = Socket::new(socket_sender);
 
         let mut send_vec: Vec<u8> = vec![0; 100];
@@ -270,7 +315,7 @@ mod tests {
 
         let recv_msg = sender.recv_one().await.unwrap();
 
-        assert_eq!(recv_msg.data, send_vec);
+        assert_eq!(recv_msg.unwrap().data, send_vec);
 
         println!("Finished!");
     }
@@ -285,15 +330,15 @@ mod tests {
                 let mut recver = Socket::new(x.0);
 
                 println!("recieving...");
-                let recvd = recver.recv_one().await.unwrap().data;
+                let recvd = recver.recv_one().await.unwrap().unwrap().data;
 
-                assert_eq!(recvd, vec![0,1,2,3,4,5]);
+                assert_eq!(recvd, vec![0, 1, 2, 3, 4, 5]);
 
                 recver.send(&recvd).await;
 
                 println!("Finished!");
             }
-            Err(e) => panic!("err")
+            Err(e) => panic!("err"),
         }
     }
 }
