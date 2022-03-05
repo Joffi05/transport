@@ -9,6 +9,7 @@ use bincode::{DefaultOptions, Options};
 
 const HEADER_SIZE: usize = size_of::<Header>();
 const BUFFER_SIZE: usize = 1024;
+const MAX_SENDING_SIZE: usize = 1024;
 
 /* 
 //die sind temporär bis serde
@@ -179,8 +180,13 @@ impl Socket {
         //sending header
         self.send_u8_arr(&header.to_sendable()).await?;
 
-        //sending data
-        self.send_u8_arr(&data).await?;
+        let last_index = 0;
+        //sending data split in 1024 packages
+        for i in 0..((data.len() - (data.len() % MAX_SENDING_SIZE)) / MAX_SENDING_SIZE) {
+            self.send_u8_arr(&data[i * MAX_SENDING_SIZE..(i + 1) * MAX_SENDING_SIZE]).await?;
+        }
+        //sending rest thats not dividable by 1024
+        self.send_u8_arr(&data[last_index * MAX_SENDING_SIZE..]).await?;
 
         Ok(())
     }
@@ -207,7 +213,6 @@ impl Socket {
 
             let mut _bytes_read: usize = 0;
             //wait until readable
-            println!("before await readable {:?}", self.recv_buffer);
             self.stream.readable().await?;
     
             match self.stream.try_read(&mut buf) {
@@ -311,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_sending() {
-        let mut socket_sender = TcpStream::connect("192.168.178.43:700").await.unwrap();
+        let mut socket_sender = TcpStream::connect("192.168.178.124:700").await.unwrap();
         let mut sender = Socket::new(socket_sender);
 
         let mut send_vec: Vec<u8> = vec![0; 100];
@@ -334,7 +339,7 @@ mod tests {
                 println!("recieving...");
                 let recvd = recver.recv_one().await.unwrap().unwrap().data;
 
-                assert_eq!(recvd, vec![0; 100]);
+                assert_eq!(recvd, vec![0; 1000000]);
 
                 recver.send(&recvd).await;
 
