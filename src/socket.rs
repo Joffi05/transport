@@ -161,14 +161,19 @@ impl Socket {
         Ok(Message::new(header, msg.to_vec()))
     }
 
-    /*fn parse_all(&mut self) -> Vec<Message> {
+    fn parse_all(&mut self) -> Vec<Message> {
         let mut messages: Vec<Message> = vec![];
 
         while self.recv_buffer.len() >= HEADER_SIZE {
-            messages.push(self.parse_msg());
+            let msg = match self.parse_msg() {
+                Ok(x) => x,
+                Err(_) => return messages,
+            };
+            
+            messages.push(msg);
         }
         messages
-    } */
+    }
 
     /// Sends an item with the Sendable trait to the in the
     /// Socket specified Address.
@@ -191,18 +196,8 @@ impl Socket {
         Ok(())
     }
 
-    /// First recieves new data, if the buffer is empty and
+    /// Trys to read new data,
     /// then tries to parse a new Message.
-    /* pub async fn recv_one(&mut self) -> Result<Message, Box<dyn Error>> {
-        if self.recv_buffer.len() == 0 {
-            self.recv().await?;
-        }
-
-        Ok(self.parse_msg())
-    } */
-
-
-    //new recv_one()
     pub async fn recv_one(&mut self) -> Result<Option<Message>, Box<dyn Error>> {
         loop {
             if let Ok(msg) = self.parse_msg() {
@@ -227,16 +222,6 @@ impl Socket {
             self.recv_buffer.extend(&buf[0.._bytes_read]);
         }
     }
-
-    /*/// First recieves new data, if the buffer is empty and
-    /// then tries to parse all available data into a Vec<Message>.
-    pub async fn recv_all(&mut self) -> Result<Vec<Message>, Box<dyn Error>> {
-        if self.recv_buffer.len() == 0 {
-            self.recv().await?;
-        }
-
-        Ok(self.parse_all())
-    }*/
 }
 
 #[allow(unused)]
@@ -324,6 +309,9 @@ mod tests {
         println!("sending...");
         sender.send(&send_vec).await;
 
+        let answer_recvd = sender.recv_one().await.unwrap().unwrap().data;
+        assert_eq!(answer_recvd, vec![0; 500]);
+
         println!("Finished!");
     }
 
@@ -341,6 +329,8 @@ mod tests {
 
                 println!("recvd.len: {}", recvd.len());
                 assert_eq!(recvd.len(), 100);
+
+
 
                 println!("Finished!");
             }
